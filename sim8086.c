@@ -18,6 +18,7 @@
 // #define PRINT_BYTE
 
 typedef unsigned char byte_t;
+typedef char s8;
 
 byte_t byte_span(byte_t byte, int begin, int end)
 {
@@ -61,6 +62,8 @@ byte_t get_byte(FILE *file)
 #define OPCODE_JNP_JPO                          0b1011
 #define OPCODE_JNO                              0b0001
 #define OPCODE_JNS                              0b1001
+
+#define OPCODE_LOOPS                            0b111000
 
 const char *reg_field_encoding[2][8] = {
     /* W = 0 */ {
@@ -450,20 +453,20 @@ int main(int argc, char** argv)
             fprintf(out_file, "%s %s, %s%d\n", op_from_identifier[*reg], dst, type, data);
         }
         /* Conditional jumps */
-        else if (byte_span(byte, 4, 8) == 0b0111)
+        else if (byte_span(byte, 4, 8) == OPCODE_CONDITIONAL_JUMPS)
         {
-            const byte_t jump_type = byte_span(byte, 0, 4);
-            const byte_t ip_inc8 = get_byte(in_file);
+            byte_t jump_type = byte_span(byte, 0, 4);
+            s8 ip_inc8 = get_byte(in_file) + 2;
 
-            fprintf(out_file, "%s %d\n", jump_from_identifier[jump_type], ip_inc8);
+            fprintf(out_file, "%s $%s%d\n", jump_from_identifier[jump_type], ip_inc8 < 0 ? "" : "+", ip_inc8);
         }
         /* Loops */
-        else if (byte_span(byte, 2, 8) == 0b111000)
+        else if (byte_span(byte, 2, 8) == OPCODE_LOOPS)
         {
-            const byte_t loop_type = byte_span(byte, 0, 2);
-            const byte_t ip_inc8 = get_byte(in_file);
+            byte_t loop_type = byte_span(byte, 0, 2);
+            s8 ip_inc8 = get_byte(in_file) + 2;
 
-            fprintf(out_file, "%s %d\n", loop_from_idnetifier[loop_type], ip_inc8);
+            fprintf(out_file, "%s $%s%d\n", loop_from_idnetifier[loop_type], ip_inc8 < 0 ? "" : "+", ip_inc8);
         }
         else
         {
