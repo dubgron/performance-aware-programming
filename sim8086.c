@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 
-static const char* alt_path = "data/listing_0046_add_sub_cmp";
+static const char* alt_path = "data/listing_0049_conditional_jumps";
 
 #define SWAP_REG(x, y) do { char* t = x; x = y; y = t; } while (0)
 
@@ -26,13 +26,6 @@ typedef char s8;
 byte_t byte_span(byte_t byte, int begin, int end)
 {
     return (byte - ((byte >> end) << end)) >> begin;
-}
-
-byte_t get_byte(FILE *file)
-{
-    byte_t result = fgetc(file);
-    // PRINT_BYTE("", result, "\n");
-    return result;
 }
 
 #define OPCODE_MOV_REGMEM_TOFROM_REG            0b100010
@@ -165,6 +158,8 @@ struct Registry
     u16 di;
 
     u8 flags;
+
+    int ip;
 };
 typedef struct Registry Registry;
 static Registry *global_reg = NULL;
@@ -172,6 +167,15 @@ static Registry *global_reg = NULL;
 static size_t buffer_size = 24;
 static size_t max_buffers = 2;
 static char *buffer;
+
+byte_t get_byte(byte_t* instructions)
+{
+    byte_t result = instructions[global_reg->ip];
+    global_reg->ip += 1;
+    //byte_t result = fgetc(file);
+    // PRINT_BYTE("", result, "\n");
+    return result;
+}
 
 static Registry create_reg()
 {
@@ -188,6 +192,8 @@ static Registry create_reg()
     reg.di = 0;
 
     reg.flags = Flag_None;
+
+    reg.ip = 0;
 
     return reg;
 }
@@ -273,12 +279,12 @@ static void get_three_buffers(char** out_buffer_1, char** out_buffer_2, char** o
     memset(*out_buffer_3, 0, buffer_size);
 }
 
-static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **out_dst, byte_t *reg_to_reg)
+static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src, char **out_dst, byte_t *reg_to_reg)
 {
     byte_t D = byte_span(byte, 1, 2);
     byte_t W = byte_span(byte, 0, 1);
 
-    byte_t next_byte = get_byte(file);
+    byte_t next_byte = get_byte(instructions);
     byte_t MOD = byte_span(next_byte, 6, 8);
     byte_t REG = byte_span(next_byte, 3, 6);
     byte_t RM = byte_span(next_byte, 0, 3);
@@ -302,7 +308,7 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
         /* Register Mode, 8-bit displacement follows */
         case 0b01:
         {
-            byte_t disp_lo = get_byte(file);
+            byte_t disp_lo = get_byte(instructions);
             int disp = disp_lo + (disp_lo & 0x80 ? 0xff00 : 0);
             sprintf(*out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
         }
@@ -311,8 +317,8 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
         /* Register Mode, 16-bit displacement follows */
         case 0b10:
         {
-            byte_t disp_lo = get_byte(file);
-            byte_t disp_hi = get_byte(file);
+            byte_t disp_lo = get_byte(instructions);
+            byte_t disp_hi = get_byte(instructions);
             int disp = disp_lo + (disp_hi << 8);
             sprintf(*out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
         }
@@ -324,8 +330,8 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
             /* Direct Address */
             if (RM == 0b110)
             {
-                byte_t disp_lo = get_byte(file);
-                byte_t disp_hi = get_byte(file);
+                byte_t disp_lo = get_byte(instructions);
+                byte_t disp_hi = get_byte(instructions);
                 int direct_address = disp_lo + (disp_hi << 8);
 
                 sprintf(*out_dst, "[%d]", direct_address);
@@ -344,12 +350,12 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
     }
 }
 
-static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg, byte_t *imm_to_reg)
+static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg, byte_t *imm_to_reg)
 {
     byte_t W = byte_span(byte, 0, 1);
     byte_t S = byte_span(byte, 1, 2);
 
-    byte_t next_byte = get_byte(file);
+    byte_t next_byte = get_byte(instructions);
     byte_t MOD = byte_span(next_byte, 6, 8);
     byte_t RM = byte_span(next_byte, 0, 3);
 
@@ -370,7 +376,7 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         /* Register Mode, 8-bit displacement follows */
         case 0b01:
         {
-            byte_t disp = get_byte(file);
+            byte_t disp = get_byte(instructions);
             sprintf(out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
         }
         break;
@@ -378,8 +384,8 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         /* Register Mode, 16-bit displacement follows */
         case 0b10:
         {
-            byte_t disp_lo = get_byte(file);
-            byte_t disp_hi = get_byte(file);
+            byte_t disp_lo = get_byte(instructions);
+            byte_t disp_hi = get_byte(instructions);
             int disp = disp_lo + (disp_hi << 8);
             sprintf(out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
         }
@@ -391,8 +397,8 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
             /* Direct Address */
             if (RM == 0b110)
             {
-                byte_t disp_lo = get_byte(file);
-                byte_t disp_hi = get_byte(file);
+                byte_t disp_lo = get_byte(instructions);
+                byte_t disp_hi = get_byte(instructions);
                 int direct_address = disp_lo + (disp_hi << 8);
 
                 sprintf(out_dst, "[%d]", direct_address);
@@ -405,7 +411,7 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         break;
     }
 
-    int data = get_byte(file);
+    int data = get_byte(instructions);
     if (W)
     {
         if (use_s_bit && S)
@@ -414,7 +420,7 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         }
         else
         {
-            byte_t data_w = get_byte(file);
+            byte_t data_w = get_byte(instructions);
             data = data + (data_w << 8);
         }
 
@@ -433,7 +439,7 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
     return data;
 }
 
-static void sim_imm_ops_to_reg(int op_id, int value, const char* dst)
+static void sim_ops_to_reg(int op_id, int src_value, const char* dst)
 {
     int dst_value = get_from_reg(global_reg, dst);
 
@@ -444,21 +450,21 @@ static void sim_imm_ops_to_reg(int op_id, int value, const char* dst)
     {
         case 0b000: // add
         {
-            result = dst_value + value;
+            result = dst_value + src_value;
             set_reg(global_reg, dst, result);
         }
         break;
 
         case 0b101: // sub
         {
-            result = dst_value - value;
+            result = dst_value - src_value;
             set_reg(global_reg, dst, result);
         }
         break;
 
         case 0b111: // cmp
         {
-            result = dst_value - value;
+            result = dst_value - src_value;
         }
         break;
 
@@ -480,12 +486,6 @@ static void sim_imm_ops_to_reg(int op_id, int value, const char* dst)
     }
 }
 
-static void sim_ops_to_reg(int op_id, const char* src, const char* dst)
-{
-    int src_value = get_from_reg(global_reg, src);
-    sim_imm_ops_to_reg(op_id, src_value, dst);
-}
-
 int main(int argc, char** argv)
 {
     const char* in_path;
@@ -498,12 +498,19 @@ int main(int argc, char** argv)
         in_path = alt_path;
     }
 
-    FILE *in_file = fopen(in_path, "rb");
+    FILE* in_file = fopen(in_path, "rb");
     if (!in_file)
     {
         printf("Failed to open %s!", in_path);
         return 1;
     }
+
+    fseek(in_file, 0, SEEK_END);
+    int in_length = ftell(in_file);
+    fseek(in_file, 0, SEEK_SET);
+
+    byte_t* instructions = (byte_t*)malloc(in_length);
+    fread(instructions, in_length, 1, in_file);
 
     char *out_path = (char*)malloc(strlen(in_path) + 4);
     sprintf(out_path, "out/%s.asm", strrchr(in_path, '/') + 1);
@@ -524,9 +531,9 @@ int main(int argc, char** argv)
     Registry reg = create_reg();
     global_reg = &reg;
 
-    for (;;)
+    while (global_reg->ip < in_length)
     {
-        byte_t byte = get_byte(in_file);
+        byte_t byte = get_byte(instructions);
         if (feof(in_file)) break;
 
         /* MOV: Register/memory to/from register */
@@ -537,7 +544,7 @@ int main(int argc, char** argv)
 
             byte_t reg_to_reg = 0;
 
-            handle_reg_mem_ops(byte, in_file, &src, &dst, &reg_to_reg);
+            handle_reg_mem_ops(byte, instructions, &src, &dst, &reg_to_reg);
 
             if (reg_to_reg)
             {
@@ -555,7 +562,7 @@ int main(int argc, char** argv)
 
             byte_t imm_to_reg = 0;
 
-            int data = handle_imm_to_reg_mem_ops(byte, in_file, 0, dst, type, NULL, &imm_to_reg);
+            int data = handle_imm_to_reg_mem_ops(byte, instructions, 0, dst, type, NULL, &imm_to_reg);
 
             if (imm_to_reg)
             {
@@ -570,10 +577,10 @@ int main(int argc, char** argv)
             byte_t W = byte_span(byte, 3, 4);
             byte_t REG = byte_span(byte, 0, 3);
 
-            int data = get_byte(in_file);
+            int data = get_byte(instructions);
             if (W)
             {
-                byte_t data_w = get_byte(in_file);
+                byte_t data_w = get_byte(instructions);
                 data = data + (data_w << 8);
             }
 
@@ -585,8 +592,8 @@ int main(int argc, char** argv)
         else if (byte_span(byte, 1, 8) == OPCODE_MOV_MEM_TO_ACC)
         {
             byte_t W = byte_span(byte, 0, 1);
-            byte_t addr_lo = get_byte(in_file);
-            byte_t addr_hi = get_byte(in_file);
+            byte_t addr_lo = get_byte(instructions);
+            byte_t addr_hi = get_byte(instructions);
             int addr = addr_lo + (addr_hi << 8);
 
             fprintf(out_file, "mov %s, [%d]\n", W ? "ax" : "al", addr);
@@ -595,8 +602,8 @@ int main(int argc, char** argv)
         else if (byte_span(byte, 1, 8) == OPCODE_MOV_ACC_TO_MEM)
         {
             byte_t W = byte_span(byte, 0, 1);
-            byte_t addr_lo = get_byte(in_file);
-            byte_t addr_hi = get_byte(in_file);
+            byte_t addr_lo = get_byte(instructions);
+            byte_t addr_hi = get_byte(instructions);
             int addr = addr_lo + (addr_hi << 8);
 
             fprintf(out_file, "mov [%d], %s\n", addr, W ? "ax" : "al");
@@ -610,10 +617,10 @@ int main(int argc, char** argv)
             {
                 byte_t W = byte_span(byte, 0, 1);
 
-                int data = get_byte(in_file);
+                int data = get_byte(instructions);
                 if (W)
                 {
-                    byte_t data_w = get_byte(in_file);
+                    byte_t data_w = get_byte(instructions);
                     data = data + (data_w << 8);
                 }
 
@@ -622,16 +629,17 @@ int main(int argc, char** argv)
             /* OP: Reg/memory with register to either */
             else
             {
-                char *src, *dst;
+                char* src, * dst;
                 get_two_buffers(&src, &dst);
 
                 byte_t reg_to_reg = 0;
 
-                handle_reg_mem_ops(byte, in_file, &src, &dst, &reg_to_reg);
+                handle_reg_mem_ops(byte, instructions, &src, &dst, &reg_to_reg);
 
                 if (reg_to_reg)
                 {
-                    sim_ops_to_reg(op_id, src, dst);
+                    int src_value = get_from_reg(global_reg, src);
+                    sim_ops_to_reg(op_id, src_value, dst);
                 }
 
                 fprintf(out_file, "%s %s, %s\n", op_from_identifier[op_id], dst, src);
@@ -640,17 +648,17 @@ int main(int argc, char** argv)
         /* OP: Immediate to register/memory */
         else if (byte_span(byte, 2, 8) == OPCODE_OP_IMM_TO_REGMEM)
         {
-            char *dst, *type;
-            byte_t *reg;
+            char* dst, * type;
+            byte_t* reg;
             get_three_buffers(&dst, &type, &reg);
 
             byte_t imm_to_reg = 0;
 
-            int data = handle_imm_to_reg_mem_ops(byte, in_file, 1, dst, type, reg, &imm_to_reg);
+            int data = handle_imm_to_reg_mem_ops(byte, instructions, 1, dst, type, reg, &imm_to_reg);
 
             if (imm_to_reg)
             {
-                sim_imm_ops_to_reg(*reg, data, dst);
+                sim_ops_to_reg(*reg, data, dst);
             }
 
             fprintf(out_file, "%s %s, %s%d\n", op_from_identifier[*reg], dst, type, data);
@@ -659,7 +667,19 @@ int main(int argc, char** argv)
         else if (byte_span(byte, 4, 8) == OPCODE_CONDITIONAL_JUMPS)
         {
             byte_t jump_type = byte_span(byte, 0, 4);
-            s8 ip_inc8 = get_byte(in_file) + 2;
+            s8 ip_inc8 = get_byte(instructions) + 2;
+
+            switch (jump_type)
+            {
+                case 0b0101: // jne
+                {
+                    if ((global_reg->flags & Flag_Zero) == 0)
+                    {
+                        global_reg->ip += ip_inc8 - 2;
+                    }
+                }
+                break;
+            }
 
             fprintf(out_file, "%s $%s%d\n", jump_from_identifier[jump_type], ip_inc8 < 0 ? "" : "+", ip_inc8);
         }
@@ -667,7 +687,7 @@ int main(int argc, char** argv)
         else if (byte_span(byte, 2, 8) == OPCODE_LOOPS)
         {
             byte_t loop_type = byte_span(byte, 0, 2);
-            s8 ip_inc8 = get_byte(in_file) + 2;
+            s8 ip_inc8 = get_byte(instructions) + 2;
 
             fprintf(out_file, "%s $%s%d\n", loop_from_idnetifier[loop_type], ip_inc8 < 0 ? "" : "+", ip_inc8);
         }
