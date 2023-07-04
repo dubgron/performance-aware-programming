@@ -4,6 +4,8 @@
 #include <string.h>
 #include <stdint.h>
 
+static const char* alt_path = "data/listing_0046_add_sub_cmp";
+
 #define SWAP_REG(x, y) do { char* t = x; x = y; y = t; } while (0)
 
 #define BYTE_TO_BINARY(byte) \
@@ -140,16 +142,29 @@ const char *loop_from_idnetifier[4] = {
 typedef uint8_t u8;
 typedef uint16_t u16;
 
+enum Flag_
+{
+    Flag_None = 0x00,
+    Flag_Zero = 0x01,
+    Flag_Sign = 0x02,
+};
+
+#define HIGHEST_BIT_8   0x0080
+#define HIGHEST_BIT_16  0x8000
+
 struct Registry
 {
     union { struct { u8 al, ah; }; u16 ax; };
     union { struct { u8 bl, bh; }; u16 bx; };
     union { struct { u8 cl, ch; }; u16 cx; };
     union { struct { u8 dl, dh; }; u16 dx; };
+
     u16 sp;
     u16 bp;
     u16 si;
     u16 di;
+
+    u8 flags;
 };
 typedef struct Registry Registry;
 static Registry *global_reg = NULL;
@@ -166,10 +181,13 @@ static Registry create_reg()
     reg.bx = 0;
     reg.cx = 0;
     reg.dx = 0;
+
     reg.sp = 0;
     reg.bp = 0;
     reg.si = 0;
     reg.di = 0;
+
+    reg.flags = Flag_None;
 
     return reg;
 }
@@ -255,7 +273,7 @@ static void get_three_buffers(char** out_buffer_1, char** out_buffer_2, char** o
     memset(*out_buffer_3, 0, buffer_size);
 }
 
-static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **out_dst)
+static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **out_dst, byte_t *reg_to_reg)
 {
     byte_t D = byte_span(byte, 1, 2);
     byte_t W = byte_span(byte, 0, 1);
@@ -265,8 +283,6 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
     byte_t REG = byte_span(next_byte, 3, 6);
     byte_t RM = byte_span(next_byte, 0, 3);
 
-    byte_t sim_mov = 0;
-
     strcpy(*out_src, reg_field_encoding[W][REG]);
 
     switch (MOD)
@@ -275,7 +291,11 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
         case 0b11:
         {
             strcpy(*out_dst, reg_field_encoding[W][RM]);
-            sim_mov = 1;
+
+            if (reg_to_reg)
+            {
+                *reg_to_reg = 1;
+            }
         }
         break;
 
@@ -322,15 +342,9 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
     {
         SWAP_REG(*out_src, *out_dst);
     }
-
-    if (sim_mov)
-    {
-        int data = get_from_reg(global_reg, *out_src);
-        set_reg(global_reg, *out_dst, data);
-    }
 }
 
-static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg)
+static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg, byte_t *imm_to_reg)
 {
     byte_t W = byte_span(byte, 0, 1);
     byte_t S = byte_span(byte, 1, 2);
@@ -339,15 +353,17 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
     byte_t MOD = byte_span(next_byte, 6, 8);
     byte_t RM = byte_span(next_byte, 0, 3);
 
-    byte_t sim_mov = 0;
-
     switch (MOD)
     {
         /* Register Mode, no displacement follows* */
         case 0b11:
         {
             strcpy(out_dst, reg_field_encoding[W][RM]);
-            sim_mov = 1;
+
+            if (imm_to_reg)
+            {
+                *imm_to_reg = 1;
+            }
         }
         break;
 
@@ -414,24 +430,72 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         *out_reg = byte_span(next_byte, 3, 6);
     }
 
-    if (sim_mov)
+    return data;
+}
+
+static void sim_imm_ops_to_reg(int op_id, int value, const char* dst)
+{
+    int dst_value = get_from_reg(global_reg, dst);
+
+    int skip = 0;
+    int result;
+
+    switch (op_id)
     {
-        set_reg(global_reg, out_dst, data);
+        case 0b000: // add
+        {
+            result = dst_value + value;
+            set_reg(global_reg, dst, result);
+        }
+        break;
+
+        case 0b101: // sub
+        {
+            result = dst_value - value;
+            set_reg(global_reg, dst, result);
+        }
+        break;
+
+        case 0b111: // cmp
+        {
+            result = dst_value - value;
+        }
+        break;
+
+        default: skip = 1;
     }
 
-    return data;
+    if (skip == 0)
+    {
+        global_reg->flags = Flag_None;
+        if (result == 0)
+        {
+            global_reg->flags |= Flag_Zero;
+        }
+        else if (result & HIGHEST_BIT_16)
+        {
+            global_reg->flags |= Flag_Sign;
+        }
+        printf("flags: %d\n", global_reg->flags);
+    }
+}
+
+static void sim_ops_to_reg(int op_id, const char* src, const char* dst)
+{
+    int src_value = get_from_reg(global_reg, src);
+    sim_imm_ops_to_reg(op_id, src_value, dst);
 }
 
 int main(int argc, char** argv)
 {
-    char* in_path;
+    const char* in_path;
     if (argc == 2)
     {
         in_path = argv[1];
     }
     else
     {
-        in_path = "data/listing_0044_register_movs";
+        in_path = alt_path;
     }
 
     FILE *in_file = fopen(in_path, "rb");
@@ -471,7 +535,15 @@ int main(int argc, char** argv)
             char *src, *dst;
             get_two_buffers(&src, &dst);
 
-            handle_reg_mem_ops(byte, in_file, &src, &dst);
+            byte_t reg_to_reg = 0;
+
+            handle_reg_mem_ops(byte, in_file, &src, &dst, &reg_to_reg);
+
+            if (reg_to_reg)
+            {
+                int data = get_from_reg(global_reg, src);
+                set_reg(global_reg, dst, data);
+            }
 
             fprintf(out_file, "mov %s, %s\n", dst, src);
         }
@@ -481,7 +553,14 @@ int main(int argc, char** argv)
             char *dst, *type;
             get_two_buffers(&dst, &type);
 
-            int data = handle_imm_to_reg_mem_ops(byte, in_file, 0, dst, type, NULL);
+            byte_t imm_to_reg = 0;
+
+            int data = handle_imm_to_reg_mem_ops(byte, in_file, 0, dst, type, NULL, &imm_to_reg);
+
+            if (imm_to_reg)
+            {
+                set_reg(global_reg, dst, data);
+            }
 
             fprintf(out_file, "mov %s, %s%d\n", dst, type, data);
         }
@@ -546,7 +625,14 @@ int main(int argc, char** argv)
                 char *src, *dst;
                 get_two_buffers(&src, &dst);
 
-                handle_reg_mem_ops(byte, in_file, &src, &dst);
+                byte_t reg_to_reg = 0;
+
+                handle_reg_mem_ops(byte, in_file, &src, &dst, &reg_to_reg);
+
+                if (reg_to_reg)
+                {
+                    sim_ops_to_reg(op_id, src, dst);
+                }
 
                 fprintf(out_file, "%s %s, %s\n", op_from_identifier[op_id], dst, src);
             }
@@ -558,7 +644,14 @@ int main(int argc, char** argv)
             byte_t *reg;
             get_three_buffers(&dst, &type, &reg);
 
-            int data = handle_imm_to_reg_mem_ops(byte, in_file, 1, dst, type, reg);
+            byte_t imm_to_reg = 0;
+
+            int data = handle_imm_to_reg_mem_ops(byte, in_file, 1, dst, type, reg, &imm_to_reg);
+
+            if (imm_to_reg)
+            {
+                sim_imm_ops_to_reg(*reg, data, dst);
+            }
 
             fprintf(out_file, "%s %s, %s%d\n", op_from_identifier[*reg], dst, type, data);
         }
