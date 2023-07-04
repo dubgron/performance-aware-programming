@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <stdint.h>
 
 #define SWAP_REG(x, y) do { char* t = x; x = y; y = t; } while (0)
 
@@ -136,9 +137,96 @@ const char *loop_from_idnetifier[4] = {
     /* 11 = */ "jcxz"
 };
 
+typedef uint8_t u8;
+typedef uint16_t u16;
+
+struct Registry
+{
+    union { struct { u8 al, ah; }; u16 ax; };
+    union { struct { u8 bl, bh; }; u16 bx; };
+    union { struct { u8 cl, ch; }; u16 cx; };
+    union { struct { u8 dl, dh; }; u16 dx; };
+    u16 sp;
+    u16 bp;
+    u16 si;
+    u16 di;
+};
+typedef struct Registry Registry;
+static Registry *global_reg = NULL;
+
 static size_t buffer_size = 24;
 static size_t max_buffers = 2;
 static char *buffer;
+
+static Registry create_reg()
+{
+    Registry reg;
+
+    reg.ax = 0;
+    reg.bx = 0;
+    reg.cx = 0;
+    reg.dx = 0;
+    reg.sp = 0;
+    reg.bp = 0;
+    reg.si = 0;
+    reg.di = 0;
+
+    return reg;
+}
+
+static int get_from_reg(Registry *reg, const char *reg_name)
+{
+    if (strcmp(reg_name, "ax") == 0)    return reg->ax;
+    if (strcmp(reg_name, "bx") == 0)    return reg->bx;
+    if (strcmp(reg_name, "cx") == 0)    return reg->cx;
+    if (strcmp(reg_name, "dx") == 0)    return reg->dx;
+
+    if (strcmp(reg_name, "sp") == 0)    return reg->sp;
+    if (strcmp(reg_name, "bp") == 0)    return reg->bp;
+    if (strcmp(reg_name, "si") == 0)    return reg->si;
+    if (strcmp(reg_name, "di") == 0)    return reg->di;
+
+    if (strcmp(reg_name, "al") == 0)    return reg->al;
+    if (strcmp(reg_name, "ah") == 0)    return reg->ah;
+
+    if (strcmp(reg_name, "bl") == 0)    return reg->bl;
+    if (strcmp(reg_name, "bh") == 0)    return reg->bh;
+
+    if (strcmp(reg_name, "cl") == 0)    return reg->cl;
+    if (strcmp(reg_name, "ch") == 0)    return reg->ch;
+
+    if (strcmp(reg_name, "dl") == 0)    return reg->dl;
+    if (strcmp(reg_name, "dh") == 0)    return reg->dh;
+
+    return 0;
+}
+
+#define SET_REG(reg_part, value) { int old = reg->reg_part; reg->reg_part = value; printf("%s: %d -> %d\n", #reg_part, old, value); }
+
+static void set_reg(Registry* reg, const char* reg_name, int value)
+{
+    if (strcmp(reg_name, "ax") == 0)         SET_REG(ax, value)
+    else if (strcmp(reg_name, "bx") == 0)    SET_REG(bx, value)
+    else if (strcmp(reg_name, "cx") == 0)    SET_REG(cx, value)
+    else if (strcmp(reg_name, "dx") == 0)    SET_REG(dx, value)
+
+    else if (strcmp(reg_name, "sp") == 0)    SET_REG(sp, value)
+    else if (strcmp(reg_name, "bp") == 0)    SET_REG(bp, value)
+    else if (strcmp(reg_name, "si") == 0)    SET_REG(si, value)
+    else if (strcmp(reg_name, "di") == 0)    SET_REG(di, value)
+
+    else if (strcmp(reg_name, "al") == 0)    SET_REG(al, value)
+    else if (strcmp(reg_name, "ah") == 0)    SET_REG(ah, value)
+
+    else if (strcmp(reg_name, "bl") == 0)    SET_REG(bl, value)
+    else if (strcmp(reg_name, "bh") == 0)    SET_REG(bh, value)
+
+    else if (strcmp(reg_name, "cl") == 0)    SET_REG(cl, value)
+    else if (strcmp(reg_name, "ch") == 0)    SET_REG(ch, value)
+
+    else if (strcmp(reg_name, "dl") == 0)    SET_REG(dl, value)
+    else if (strcmp(reg_name, "dh") == 0)    SET_REG(dh, value)
+}
 
 static void get_buffer(char **out_buffer)
 {
@@ -177,18 +265,21 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
     byte_t REG = byte_span(next_byte, 3, 6);
     byte_t RM = byte_span(next_byte, 0, 3);
 
+    byte_t sim_mov = 0;
+
     strcpy(*out_src, reg_field_encoding[W][REG]);
 
     switch (MOD)
     {
-        /* Memory Mode, no displacement follows* */
+        /* Register Mode, no displacement follows* */
         case 0b11:
         {
             strcpy(*out_dst, reg_field_encoding[W][RM]);
+            sim_mov = 1;
         }
         break;
 
-        /* Memory Mode, 8-bit displacement follows */
+        /* Register Mode, 8-bit displacement follows */
         case 0b01:
         {
             byte_t disp_lo = get_byte(file);
@@ -197,7 +288,7 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
         }
         break;
 
-        /* Memory Mode, 16-bit displacement follows */
+        /* Register Mode, 16-bit displacement follows */
         case 0b10:
         {
             byte_t disp_lo = get_byte(file);
@@ -231,6 +322,12 @@ static void handle_reg_mem_ops(byte_t byte, FILE *file, char **out_src, char **o
     {
         SWAP_REG(*out_src, *out_dst);
     }
+
+    if (sim_mov)
+    {
+        int data = get_from_reg(global_reg, *out_src);
+        set_reg(global_reg, *out_dst, data);
+    }
 }
 
 static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg)
@@ -242,16 +339,19 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
     byte_t MOD = byte_span(next_byte, 6, 8);
     byte_t RM = byte_span(next_byte, 0, 3);
 
+    byte_t sim_mov = 0;
+
     switch (MOD)
     {
-        /* Memory Mode, no displacement follows* */
+        /* Register Mode, no displacement follows* */
         case 0b11:
         {
             strcpy(out_dst, reg_field_encoding[W][RM]);
+            sim_mov = 1;
         }
         break;
 
-        /* Memory Mode, 8-bit displacement follows */
+        /* Register Mode, 8-bit displacement follows */
         case 0b01:
         {
             byte_t disp = get_byte(file);
@@ -259,7 +359,7 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         }
         break;
 
-        /* Memory Mode, 16-bit displacement follows */
+        /* Register Mode, 16-bit displacement follows */
         case 0b10:
         {
             byte_t disp_lo = get_byte(file);
@@ -314,6 +414,11 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, FILE *file, int use_s_bit, cha
         *out_reg = byte_span(next_byte, 3, 6);
     }
 
+    if (sim_mov)
+    {
+        set_reg(global_reg, out_dst, data);
+    }
+
     return data;
 }
 
@@ -326,7 +431,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        in_path = "data/listing_0041_add_sub_cmp_jnz";
+        in_path = "data/listing_0044_register_movs";
     }
 
     FILE *in_file = fopen(in_path, "rb");
@@ -351,6 +456,9 @@ int main(int argc, char** argv)
     fprintf(out_file, "bits 16\n");
 
     buffer = (char*)malloc(buffer_size * max_buffers);
+
+    Registry reg = create_reg();
+    global_reg = &reg;
 
     for (;;)
     {
@@ -390,9 +498,11 @@ int main(int argc, char** argv)
                 data = data + (data_w << 8);
             }
 
+            set_reg(global_reg, reg_field_encoding[W][REG], data);
+
             fprintf(out_file, "mov %s, %d\n", reg_field_encoding[W][REG], data);
         }
-        /* MOV: Memory to accmulator */
+        /* MOV: Register to accmulator */
         else if (byte_span(byte, 1, 8) == OPCODE_MOV_MEM_TO_ACC)
         {
             byte_t W = byte_span(byte, 0, 1);
