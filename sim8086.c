@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 
-static const char* alt_path = "data/listing_0052_memory_add_loop";
+static const char* alt_path = "data/listing_0054_draw_rectangle";
 
 #define SWAP_REG(x, y) do { char* t = x; x = y; y = t; } while (0)
 
@@ -805,6 +805,12 @@ int main(int argc, char** argv)
     printf("bp: %d\n", global_reg->bp);
     printf("si: %d\n", global_reg->si);
     printf("di: %d\n", global_reg->di);
+
+    FILE* dump_file = fopen("mem_dump.data", "wb");
+    if (dump_file)
+    {
+        fwrite(global_mem, 1, 1024 * 1024, dump_file);
+    }
 
 
     free(buffer);
