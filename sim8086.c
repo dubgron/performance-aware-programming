@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 
-static const char* alt_path = "data/listing_0049_conditional_jumps";
+static const char* alt_path = "data/listing_0052_memory_add_loop";
 
 #define SWAP_REG(x, y) do { char* t = x; x = y; y = t; } while (0)
 
@@ -142,6 +142,22 @@ enum Flag_
     Flag_Sign = 0x02,
 };
 
+typedef enum SimType
+{
+    SimType_None,
+    SimType_RegToReg,
+    SimType_ImmToReg,
+    SimType_ImmToMem,
+    SimType_RegToMem,
+    SimType_MemToReg,
+} SimType;
+
+typedef struct SimInfo
+{
+    SimType type;
+    int addr;
+} SimInfo;
+
 #define HIGHEST_BIT_8   0x0080
 #define HIGHEST_BIT_16  0x8000
 
@@ -163,6 +179,8 @@ struct Registry
 };
 typedef struct Registry Registry;
 static Registry *global_reg = NULL;
+
+static byte_t global_mem[1024 * 1024] = { 0 };
 
 static size_t buffer_size = 24;
 static size_t max_buffers = 2;
@@ -200,32 +218,38 @@ static Registry create_reg()
 
 static int get_from_reg(Registry *reg, const char *reg_name)
 {
-    if (strcmp(reg_name, "ax") == 0)    return reg->ax;
-    if (strcmp(reg_name, "bx") == 0)    return reg->bx;
-    if (strcmp(reg_name, "cx") == 0)    return reg->cx;
-    if (strcmp(reg_name, "dx") == 0)    return reg->dx;
+    if (strcmp(reg_name, "ax") == 0)        return reg->ax;
+    if (strcmp(reg_name, "bx") == 0)        return reg->bx;
+    if (strcmp(reg_name, "cx") == 0)        return reg->cx;
+    if (strcmp(reg_name, "dx") == 0)        return reg->dx;
 
-    if (strcmp(reg_name, "sp") == 0)    return reg->sp;
-    if (strcmp(reg_name, "bp") == 0)    return reg->bp;
-    if (strcmp(reg_name, "si") == 0)    return reg->si;
-    if (strcmp(reg_name, "di") == 0)    return reg->di;
+    if (strcmp(reg_name, "sp") == 0)        return reg->sp;
+    if (strcmp(reg_name, "bp") == 0)        return reg->bp;
+    if (strcmp(reg_name, "si") == 0)        return reg->si;
+    if (strcmp(reg_name, "di") == 0)        return reg->di;
 
-    if (strcmp(reg_name, "al") == 0)    return reg->al;
-    if (strcmp(reg_name, "ah") == 0)    return reg->ah;
+    if (strcmp(reg_name, "al") == 0)        return reg->al;
+    if (strcmp(reg_name, "ah") == 0)        return reg->ah;
 
-    if (strcmp(reg_name, "bl") == 0)    return reg->bl;
-    if (strcmp(reg_name, "bh") == 0)    return reg->bh;
+    if (strcmp(reg_name, "bl") == 0)        return reg->bl;
+    if (strcmp(reg_name, "bh") == 0)        return reg->bh;
 
-    if (strcmp(reg_name, "cl") == 0)    return reg->cl;
-    if (strcmp(reg_name, "ch") == 0)    return reg->ch;
+    if (strcmp(reg_name, "cl") == 0)        return reg->cl;
+    if (strcmp(reg_name, "ch") == 0)        return reg->ch;
 
-    if (strcmp(reg_name, "dl") == 0)    return reg->dl;
-    if (strcmp(reg_name, "dh") == 0)    return reg->dh;
+    if (strcmp(reg_name, "dl") == 0)        return reg->dl;
+    if (strcmp(reg_name, "dh") == 0)        return reg->dh;
+
+    if (strcmp(reg_name, "bx + si") == 0)    return reg->bx + reg->si;
+    if (strcmp(reg_name, "bx + di") == 0)    return reg->bx + reg->di;
+    if (strcmp(reg_name, "bp + si") == 0)    return reg->bp + reg->si;
+    if (strcmp(reg_name, "bp + di") == 0)    return reg->bp + reg->di;
 
     return 0;
 }
 
-#define SET_REG(reg_part, value) { int old = reg->reg_part; reg->reg_part = value; printf("%s: %d -> %d\n", #reg_part, old, value); }
+#define SET_REG(part, value) { int old = reg->part; reg->part = value; printf("%s: %d -> %d\n", #part, old, value); }
+#define SET_MEM(addr, value) { int old = global_mem[addr]; global_mem[addr] = value; printf("[%d]: %d -> %d\n", addr, old, value); }
 
 static void set_reg(Registry* reg, const char* reg_name, int value)
 {
@@ -279,7 +303,7 @@ static void get_three_buffers(char** out_buffer_1, char** out_buffer_2, char** o
     memset(*out_buffer_3, 0, buffer_size);
 }
 
-static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src, char **out_dst, byte_t *reg_to_reg)
+static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src, char **out_dst, SimInfo *out_sim_info)
 {
     byte_t D = byte_span(byte, 1, 2);
     byte_t W = byte_span(byte, 0, 1);
@@ -298,9 +322,9 @@ static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src
         {
             strcpy(*out_dst, reg_field_encoding[W][RM]);
 
-            if (reg_to_reg)
+            if (out_sim_info)
             {
-                *reg_to_reg = 1;
+                out_sim_info->type = SimType_RegToReg;
             }
         }
         break;
@@ -311,6 +335,12 @@ static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src
             byte_t disp_lo = get_byte(instructions);
             int disp = disp_lo + (disp_lo & 0x80 ? 0xff00 : 0);
             sprintf(*out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
+
+            if (out_sim_info)
+            {
+                out_sim_info->type = SimType_RegToMem;
+                out_sim_info->addr = get_from_reg(global_reg, effective_address_calculation[RM]) + disp;
+            }
         }
         break;
 
@@ -321,6 +351,12 @@ static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src
             byte_t disp_hi = get_byte(instructions);
             int disp = disp_lo + (disp_hi << 8);
             sprintf(*out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
+
+            if (out_sim_info)
+            {
+                out_sim_info->type = SimType_RegToMem;
+                out_sim_info->addr = get_from_reg(global_reg, effective_address_calculation[RM]) + disp;
+            }
         }
         break;
 
@@ -335,10 +371,25 @@ static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src
                 int direct_address = disp_lo + (disp_hi << 8);
 
                 sprintf(*out_dst, "[%d]", direct_address);
+
+                if (out_sim_info)
+                {
+                    out_sim_info->addr = direct_address;
+                }
             }
             else
             {
                 sprintf(*out_dst, "[%s]", effective_address_calculation[RM]);
+
+                if (out_sim_info)
+                {
+                    out_sim_info->addr = get_from_reg(global_reg, effective_address_calculation[RM]);
+                }
+            }
+
+            if (out_sim_info)
+            {
+                out_sim_info->type = SimType_RegToMem;
             }
         }
         break;
@@ -347,10 +398,15 @@ static void handle_reg_mem_ops(byte_t byte, byte_t *instructions, char **out_src
     if (D)
     {
         SWAP_REG(*out_src, *out_dst);
+
+        if (out_sim_info && out_sim_info->type == SimType_RegToMem)
+        {
+           out_sim_info->type = SimType_MemToReg;
+        }
     }
 }
 
-static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg, byte_t *imm_to_reg)
+static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_s_bit, char *out_dst, char *out_type, byte_t *out_reg, SimInfo *out_sim_info)
 {
     byte_t W = byte_span(byte, 0, 1);
     byte_t S = byte_span(byte, 1, 2);
@@ -366,9 +422,9 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_
         {
             strcpy(out_dst, reg_field_encoding[W][RM]);
 
-            if (imm_to_reg)
+            if (out_sim_info)
             {
-                *imm_to_reg = 1;
+                out_sim_info->type = SimType_ImmToReg;
             }
         }
         break;
@@ -378,6 +434,12 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_
         {
             byte_t disp = get_byte(instructions);
             sprintf(out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
+
+            if (out_sim_info)
+            {
+                out_sim_info->type = SimType_ImmToMem;
+                out_sim_info->addr = get_from_reg(global_reg, effective_address_calculation[RM]) + disp;
+            }
         }
         break;
 
@@ -388,6 +450,12 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_
             byte_t disp_hi = get_byte(instructions);
             int disp = disp_lo + (disp_hi << 8);
             sprintf(out_dst, "[%s + %d]", effective_address_calculation[RM], disp);
+
+            if (out_sim_info)
+            {
+                out_sim_info->type = SimType_ImmToMem;
+                out_sim_info->addr = get_from_reg(global_reg, effective_address_calculation[RM]) + disp;
+            }
         }
         break;
 
@@ -402,10 +470,25 @@ static int handle_imm_to_reg_mem_ops(byte_t byte, byte_t *instructions, int use_
                 int direct_address = disp_lo + (disp_hi << 8);
 
                 sprintf(out_dst, "[%d]", direct_address);
+
+                if (out_sim_info)
+                {
+                    out_sim_info->addr = direct_address;
+                }
             }
             else
             {
                 sprintf(out_dst, "[%s]", effective_address_calculation[RM]);
+
+                if (out_sim_info)
+                {
+                    out_sim_info->addr = get_from_reg(global_reg, effective_address_calculation[RM]);
+                }
+            }
+
+            if (out_sim_info)
+            {
+                out_sim_info->type = SimType_ImmToMem;
             }
         }
         break;
@@ -536,20 +619,31 @@ int main(int argc, char** argv)
         byte_t byte = get_byte(instructions);
         if (feof(in_file)) break;
 
+        SimInfo sim_info;
+        sim_info.type = SimType_None;
+        sim_info.addr = 0;
+
         /* MOV: Register/memory to/from register */
         if (byte_span(byte, 2, 8) == OPCODE_MOV_REGMEM_TOFROM_REG)
         {
             char *src, *dst;
             get_two_buffers(&src, &dst);
 
-            byte_t reg_to_reg = 0;
+            handle_reg_mem_ops(byte, instructions, &src, &dst, &sim_info);
 
-            handle_reg_mem_ops(byte, instructions, &src, &dst, &reg_to_reg);
-
-            if (reg_to_reg)
+            if (sim_info.type == SimType_RegToReg)
             {
-                int data = get_from_reg(global_reg, src);
-                set_reg(global_reg, dst, data);
+                int src_value = get_from_reg(global_reg, src);
+                set_reg(global_reg, dst, src_value);
+            }
+            else if (sim_info.type == SimType_RegToMem)
+            {
+                int src_value = get_from_reg(global_reg, src);
+                SET_MEM(sim_info.addr, src_value);
+            }
+            else if (sim_info.type == SimType_MemToReg)
+            {
+                set_reg(global_reg, dst, global_mem[sim_info.addr]);
             }
 
             fprintf(out_file, "mov %s, %s\n", dst, src);
@@ -560,13 +654,15 @@ int main(int argc, char** argv)
             char *dst, *type;
             get_two_buffers(&dst, &type);
 
-            byte_t imm_to_reg = 0;
+            int data = handle_imm_to_reg_mem_ops(byte, instructions, 0, dst, type, NULL, &sim_info);
 
-            int data = handle_imm_to_reg_mem_ops(byte, instructions, 0, dst, type, NULL, &imm_to_reg);
-
-            if (imm_to_reg)
+            if (sim_info.type == SimType_ImmToReg)
             {
                 set_reg(global_reg, dst, data);
+            }
+            else if (sim_info.type == SimType_ImmToMem)
+            {
+                SET_MEM(sim_info.addr, data);
             }
 
             fprintf(out_file, "mov %s, %s%d\n", dst, type, data);
@@ -596,6 +692,8 @@ int main(int argc, char** argv)
             byte_t addr_hi = get_byte(instructions);
             int addr = addr_lo + (addr_hi << 8);
 
+            set_reg(global_reg, W ? "ax" : "al", global_mem[addr]);
+
             fprintf(out_file, "mov %s, [%d]\n", W ? "ax" : "al", addr);
         }
         /* MOV: Accumulator to memory */
@@ -605,6 +703,9 @@ int main(int argc, char** argv)
             byte_t addr_lo = get_byte(instructions);
             byte_t addr_hi = get_byte(instructions);
             int addr = addr_lo + (addr_hi << 8);
+
+            int acc_value = get_from_reg(global_reg, W ? "ax" : "al");
+            SET_MEM(addr, acc_value);
 
             fprintf(out_file, "mov [%d], %s\n", addr, W ? "ax" : "al");
         }
@@ -632,11 +733,9 @@ int main(int argc, char** argv)
                 char* src, * dst;
                 get_two_buffers(&src, &dst);
 
-                byte_t reg_to_reg = 0;
+                handle_reg_mem_ops(byte, instructions, &src, &dst, &sim_info);
 
-                handle_reg_mem_ops(byte, instructions, &src, &dst, &reg_to_reg);
-
-                if (reg_to_reg)
+                if (sim_info.type == SimType_RegToReg)
                 {
                     int src_value = get_from_reg(global_reg, src);
                     sim_ops_to_reg(op_id, src_value, dst);
@@ -652,11 +751,9 @@ int main(int argc, char** argv)
             byte_t* reg;
             get_three_buffers(&dst, &type, &reg);
 
-            byte_t imm_to_reg = 0;
+            int data = handle_imm_to_reg_mem_ops(byte, instructions, 1, dst, type, reg, &sim_info);
 
-            int data = handle_imm_to_reg_mem_ops(byte, instructions, 1, dst, type, reg, &imm_to_reg);
-
-            if (imm_to_reg)
+            if (sim_info.type == SimType_ImmToReg)
             {
                 sim_ops_to_reg(*reg, data, dst);
             }
@@ -698,6 +795,17 @@ int main(int argc, char** argv)
             printf("Unsupported operation! Sorry :(\n");
         }
     }
+
+    printf("ax: %d\n", global_reg->ax);
+    printf("bx: %d\n", global_reg->bx);
+    printf("cx: %d\n", global_reg->cx);
+    printf("dx: %d\n", global_reg->dx);
+
+    printf("sp: %d\n", global_reg->sp);
+    printf("bp: %d\n", global_reg->bp);
+    printf("si: %d\n", global_reg->si);
+    printf("di: %d\n", global_reg->di);
+
 
     free(buffer);
 
